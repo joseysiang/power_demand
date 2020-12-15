@@ -1,0 +1,395 @@
+---
+title: "High five_Classification"
+author: "High five"
+date: "3/7/2020"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+## Data preparation
+
+```{r, warning=FALSE, message=FALSE}
+rm(list = ls())
+gc()
+library(tidyverse)   
+library(ggplot2)     
+library(tidyr)  
+library(psych)
+library(GGally)
+library(ggpubr)
+library(data.table)
+library(lmtest)
+library(dplyr)
+library(sqldf)
+library(DataCombine)
+library(forecast)
+library(leaps)
+library(car)
+library(leaps)
+library(car)
+library(stargazer)
+library(FNN)
+library(caret)
+library(class)
+library(AER)
+library(MASS)
+library(gmodels)
+library(caret)
+library(lattice)
+library(rpart)
+library(rpart.plot)
+#install.packages("rattle", repos="http://rattle.togaware.com",type="source")
+library(rattle)
+library(MLmetrics)
+```
+
+
+```{r}
+electric = read.csv("electric2.csv")
+head(electric)
+```
+```{r}
+hist(electric$total.load.actual,main='Histogram of demand' ,freq=F,breaks= 60,col = 'cadetblue')
+```
+
+### Add interaction term `rain_wind`
+
+```{r}
+electric = electric %>% mutate(rain_wind = rain_1h * wind_speed)
+```
+
+
+### Labeling `demand` with high(3), medium(2), and low(1)
+Criteria according to https://www.researchgate.net/post/How_do_I_categorize_raw_data_into_categories_Low_Average_and_High
+Calculate 25th and 75th percentiles of data. Below 25th percentile is low,  above 75th percentiles is high and in between 25th and 75th percentiles is medium. 
+
+25th percentile of demand: 24808
+75th percentile of demand: 32188.25
+max of demand: 41015
+min of demand: 18041
+
+```{r}
+min(electric$total.load.actual)
+max(electric$total.load.actual)
+quantile(electric$total.load.actual)
+electric = electric %>% mutate(demand=ifelse(total.load.actual < 24808, 1, ifelse(total.load.actual > 32188.25, 3, 2)))
+head(electric)
+electric$demand=as.factor(electric$demand)
+```
+
+### Split data into three data set
+
+```{r}
+# Set random seed.
+set.seed(1)
+
+# Shuffle the dataset
+n = nrow(electric)
+shuffled = electric[sample(n),]
+
+# Split the data in train, valid and test
+train_indices = 1:round(0.8 * n)
+train = shuffled[train_indices, ]
+
+valid_indices = (round(0.8 * n)+1):round(0.9 * n)
+valid = shuffled[valid_indices, ]
+
+test_indices = (round(0.9 * n) + 1):n
+test = shuffled[test_indices, ]
+
+# Print the structure of train, valid and test
+str(train)
+str(valid)
+str(test)
+```
+
+## Classification
+
+### Logistic regression
+
+```{r}
+train_logistic = train %>% mutate(is_high = ifelse(demand==3,1,0), is_medium = ifelse(demand==2,1,0), is_low = ifelse(demand==1,1,0))
+valid_logistic = valid %>% mutate(is_high = ifelse(demand==3,1,0), is_medium = ifelse(demand==2,1,0), is_low = ifelse(demand==1,1,0))
+test_logistic =  test  %>% mutate(is_high = ifelse(demand==3,1,0), is_medium = ifelse(demand==2,1,0), is_low = ifelse(demand==1,1,0))
+head(train_logistic)
+head(valid_logistic)
+head(test_logistic)
+```
+
+- Deal with outliers
+
+```{r}
+# backward selection
+ele.lm <- lm(total.load.actual~.-is_medium-is_high-is_low-demand-time, data = train_logistic)
+ele.lm.step <- step(ele.lm, direction = "backward")
+ele.step.pred <- predict(ele.lm.step, valid_logistic)
+
+# check outliers/ leverage points
+par(mfrow=c(2,2))
+plot(ele.lm.step, pch = ".")
+
+# exclude outliers & fit the model 
+# length(boxplot(ele.lm$residuals)$out) #283
+train_logistic <- train_logistic[-as.numeric(names(boxplot(ele.lm.step$residuals)$out)),]
+
+ele.lm <- lm(total.load.actual~.-is_medium-is_high-is_low-demand-time, data = train_logistic)
+ele.lm.step <- step(ele.lm, direction = "backward")
+summary(ele.lm.step)
+ele.step.pred <- predict(ele.lm.step, valid_logistic)
+
+# check outliers/ leverage points
+par(mfrow=c(2,2))
+plot(ele.lm.step, pch = ".")
+
+# residual histgram
+pred.res<-valid$total.load.actual - ele.step.pred
+hist(pred.res, breaks = 100, xlab = "Residuals", main = "")
+```
+
+
+
+```{r}
+
+train_logistic1<-train_logistic[,-which(names(train_logistic)%in%c('is_high','is_medium','is_low','time','total.load.actual'))]
+valid_logistic1<-valid_logistic[,-which(names(valid_logistic)%in%c('is_high','is_medium','is_low','time','total.load.actual'))]
+
+#electric1$demand <- relevel(electric1$demand, ref = "3")
+train_logistic1$demand <- factor(train_logistic1$demand, ordered = T)
+logit<-polr(demand~., data = train_logistic1, method = "logistic", Hess = T)
+coeftest(logit)
+
+# remove variables that are not significant at 0.05 level
+# iterate this step 
+train_logistic1<-train_logistic1[,-which(names(train_logistic1)%in%c('generation.fossil.gas','generation.nuclear','generation.fossil.hard.coal','generation.solar','generation.other'))]    
+valid_logistic1<-valid_logistic1[,-which(names(valid_logistic1)%in%c('generation.fossil.gas','generation.nuclear','generation.fossil.hard.coal','generation.solar','generation.other'))] 
+logit_rm<-polr(demand~., data = train_logistic1, method = "logistic", Hess = T)
+coeftest(logit_rm)
+
+
+
+# accuracy of training data 
+# confusion matirx
+pred_t<-predict(logit_rm, train_logistic1, response = T)
+regression_con_matrix_t = gmodels::CrossTable(x = train_logistic1$demand,
+                                     y = pred_t,
+                                    prop.chisq = TRUE)
+
+confusionMatrix(as.factor(train_logistic1$demand),as.factor(pred_t))
+F1_Score(y_pred = as.factor(pred_t), y_true = train_logistic1$demand, positive = NULL)
+
+
+
+
+# accuracy of validation data
+pred<-predict(logit_rm,valid_logistic1,response = T)
+
+# confusion matirx
+regression_con_matrix = gmodels::CrossTable(x = valid_logistic1$demand,
+                                     y = pred,
+                                    prop.chisq = TRUE)
+
+confusionMatrix(as.factor(valid_logistic1$demand),as.factor(pred))
+F1_Score(y_pred = as.factor(pred), y_true = valid_logistic1$demand, positive = NULL)
+
+
+# ROC plot
+library(ROCR)
+# list of predictors 
+preds_t = as.data.frame(logit_rm$fitted.values) %>% mutate(is_high = ifelse(pred_t==3,1,0), is_medium = ifelse(pred_t==2,1,0), is_low = ifelse(pred_t==1,1,0))
+preds.df<-preds_t[,-1]
+# list of actual values
+actual.df = train_logistic[,c("is_high","is_medium","is_low")]
+# plot ROC curve
+preds<-prediction(preds.df, actual.df)
+ord.roc<-performance(preds, "tpr", "fpr")
+plot(ord.roc,col = as.list(2:4),main = "Train Set ROC Curves")
+abline(a=0, b=1)
+legend(x = "bottomright", 
+       legend = c("class high", "class medium", "class low"),
+       fill = 2:4)
+
+preds_v = as.data.frame(pred_t) %>% mutate(is_high = ifelse(pred_t==3,1,0), is_medium = ifelse(pred_t==2,1,0), is_low = ifelse(pred_t==1,1,0))
+preds.df<-preds_t[,-1]
+# list of actual values
+actual.df = train_logistic[,c("is_high","is_medium","is_low")]
+# plot ROC curve
+preds<-prediction(preds.df, actual.df)
+ord.roc<-performance(preds, "tpr", "fpr")
+plot(ord.roc,col = as.list(2:4),main = "Train Set ROC Curves")
+abline(a=0, b=1)
+legend(x = "bottomright", 
+       legend = c("class high", "class medium", "class low"),
+       fill = 2:4)
+```
+
+```{r}
+stargazer(logit_rm, type = "text",  title = "Is_high regression model Result", dep.var.labels = "scripts")
+```
+
+### KNN
+
+#### initialize normalized training, validation data, complete data frames to originals
+
+```{r}
+train <- train[,-c(1,18)]
+valid <- valid[,-c(1,18)]
+test <- test[,-c(1,18)]
+electric <- electric[,-c(1,18)]
+
+train.norm <- train
+valid.norm <- valid
+electric.norm <- electric
+```
+
+#### use preProcess() from the caret package to normalize Income and Lot_Size.
+
+```{r}
+norm.values <- preProcess(train[, 1:26], method=c("center", "scale"))
+norm.values
+train.norm[, 1:26] <- predict(norm.values, train[, 1:26])
+valid.norm[, 1:26] <- predict(norm.values, valid[, 1:26])
+electric.norm[, 1:26] <- predict(norm.values, electric[, 1:26])
+
+```
+
+#### use knn() to compute knn. 
+knn() is available in library FNN (provides a list of the nearest neighbors) and library class (allows a numerical output variable).
+initialize a data frame with two columns: k, and accuracy.
+
+```{r}
+accuracy.df <- data.frame(k = seq(1, 14, 1), accuracy = rep(0, 14))
+
+# compute knn for different k on validation.
+for(i in 1:14) {          # <<<< adjust the bounds to look at particular confusion matrix
+  knn.pred <- knn(train.norm[, 1:26], valid.norm[, 1:26], 
+                  cl = train.norm[, 27], k = i)
+  accuracy.df[i, 2] <- confusionMatrix(knn.pred, valid.norm[, 27])$overall[1] 
+}
+accuracy.df=as.data.table(accuracy.df)
+accuracy.df
+plot(x=accuracy.df$k,y=accuracy.df$accuracy,xlab='k',ylab='accuracy rate')
+```
+
+
+
+```{r}
+k=accuracy.df[accuracy==max(accuracy.df$accuracy)][,1]
+k=as.integer(k)
+knn.pred <- knn(train.norm[, 1:26], valid.norm[, 1:26], 
+                  cl = train.norm[, 27], k = k)
+confusionMatrix(knn.pred, valid.norm[, 27])
+F1_Score(y_pred = knn.pred, y_true = valid.norm[, 27], positive = NULL)
+```
+
+
+### Classifcation Trees
+
+#### set dummies for target variable
+
+```{r}
+train_ct = train %>% mutate(is_high = ifelse(demand==3,1,0), is_medium = ifelse(demand==2,1,0), is_low = ifelse(demand==1,1,0))
+valid_ct = valid %>% mutate(is_high = ifelse(demand==3,1,0), is_medium = ifelse(demand==2,1,0), is_low = ifelse(demand==1,1,0))
+test_ct  = test %>% mutate(is_high = ifelse(demand==3,1,0), is_medium = ifelse(demand==2,1,0), is_low = ifelse(demand==1,1,0))
+head(train_ct)
+head(valid_ct)
+head(test_ct)
+```
+
+```{r}
+train_ct_tree = train_ct[,!names(train_ct) %in% c("total.load.actual","is_low","is_high", "is_medium", "time")]
+valid_ct_tree = valid_ct[,!names(valid_ct) %in% c("total.load.actual","is_low","is_high", "is_medium", "time")]
+test_ct_tree = test_ct[,!names(valid_ct) %in% c("total.load.actual","is_low","is_high", "is_medium", "time")]
+class.tree <- rpart(demand ~ ., data = train_ct_tree, method = "class", control = rpart.control(cp=0.01))
+summary(class.tree)
+# count number of leaves
+length(class.tree$frame$var[class.tree$frame$var == "<leaf>"])
+class.tree.pred <- predict(class.tree, valid_ct_tree, type = "class")
+confmatrix_pred = confusionMatrix(class.tree.pred, as.factor(valid_ct_tree$demand))
+confmatrix_pred
+fancyRpartPlot(class.tree)
+F1_Score(y_pred = class.tree.pred, y_true = valid_ct_tree$demand, positive = NULL)
+```
+
+
+## Model Comparison with Test dataset
+
+#### test logistic model
+
+```{r}
+test_logistic1<-test_logistic[,-c(1,18,30,31,32)]
+
+pred<-predict(logit_rm,test_logistic1,response = T)
+
+par(mfrow=c(2,2))
+#plot(logit, pch = ".")
+
+
+
+# confusion matirx
+regression_con_matrix = gmodels::CrossTable(x = test_logistic1$demand,
+                                     y = pred,
+                                    prop.chisq = TRUE)
+
+confusionMatrix(as.factor(test_logistic1$demand),as.factor(pred))
+```
+
+#### test knn model
+
+```{r}
+test.norm <- test
+norm.values <- preProcess(train[, 1:26], method=c("center", "scale"))
+test.norm[, 1:26] <- predict(norm.values, test[, 1:26])
+
+knn.pred <- knn(train.norm[, 1:26], test.norm[, 1:26], 
+                  cl = train.norm[, 27], k = 3)
+confusionMatrix(knn.pred, test.norm[, 27])
+```
+
+
+#### test classifcation trees model
+
+```{r}
+class.tree.test <- predict(class.tree, test_ct_tree, type = "class")
+confmatrix_test = confusionMatrix(class.tree.test, as.factor(test_ct_tree$demand))
+confmatrix_test
+```
+
+#### Compare predicted labels of three models
+
+```{r}
+comparison_result = cbind(logistic_regression = as.factor(pred),knn = as.factor(knn.pred), classification_tree = as.factor(class.tree.test))
+comparison_result = as.data.frame(comparison_result)
+```
+
+- Same predictions among three method
+
+```{r}
+same_3 = comparison_result[comparison_result$logistic_regression == comparison_result$knn & comparison_result$knn == comparison_result$classification_tree,]
+nrow(same_3)/nrow(comparison_result)
+```
+
+- Same predictions among logistic and knn
+
+```{r}
+same_log_knn = comparison_result[comparison_result$logistic_regression == comparison_result$knn,]
+nrow(same_log_knn)/nrow(comparison_result)
+```
+
+- Same predictions among tree and knn
+
+```{r}
+same_tree_knn = comparison_result[comparison_result$classification_tree == comparison_result$knn,]
+nrow(same_tree_knn)/nrow(comparison_result)
+```
+
+- Same predictions among tree and logistic
+
+```{r}
+same_tree_log = comparison_result[comparison_result$logistic_regression == comparison_result$classification_tree,]
+nrow(same_tree_log)/nrow(comparison_result)
+```
+
+
+
+

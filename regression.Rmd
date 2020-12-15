@@ -1,0 +1,204 @@
+---
+title: 'R2: Rgression'
+author: "High Five"
+date: "2/29/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(forecast)
+library(leaps)
+library(forecast)
+library(car)
+```
+
+### linear model
+```{r}
+# preparation
+# load data
+electric <- read.csv("electric2.csv")
+ele.t <- as.tibble(electric)
+
+# draw variables
+ele.t <- ele.t[,-1]
+# ele.t <- ele.t[,]
+
+# partition data
+set.seed(2)
+index <- sample(1:nrow(ele.t), round(nrow(ele.t)*0.6,0))
+train <- ele.t[index,]
+valid <- ele.t[-index,]
+```
+
+
+```{r}
+# regression
+# fit the model
+ele.lm <- lm(total.load.actual~., data = train)
+options(acipen=999)
+summary(ele.lm)
+
+vif1<-as.data.frame(vif(ele.lm))
+vif1
+
+# delete variables with high vif
+ele.t<-ele.t[, -c(15,16)]
+set.seed(2)
+index <- sample(1:nrow(ele.t), round(nrow(ele.t)*0.6,0))
+train <- ele.t[index,]
+valid <- ele.t[-index,]
+
+ele.lm <- lm(total.load.actual~., data = train)
+vif2<-as.data.frame(vif(ele.lm))
+vif2
+```
+
+```{r}
+# predict using model
+ele.pred <- predict(ele.lm, data = valid)
+options(scipen = 999, digits = 3)
+
+accuracy(ele.lm$fitted.values, train$total.load.actual)
+accuracy(ele.pred, valid$total.load.actual)
+
+
+```
+
+
+```{r}
+# backward selection
+ele.lm.step <- step(ele.lm, direction = "backward")
+summary(ele.lm.step)
+ele.step.pred <- predict(ele.lm.step, valid)
+
+# check outliers/ leverage points
+par(mfrow=c(2,2))
+plot(ele.lm.step, pch = ".")
+
+
+
+# exclude outliers & fit the model 
+# length(boxplot(ele.lm$residuals)$out)/length(train) #202
+train <- train[-as.numeric(names(boxplot(ele.lm.step$residuals)$out)),]
+
+ele.lm <- lm(total.load.actual~., data = train)
+ele.lm.step <- step(ele.lm, direction = "backward")
+summary(ele.lm.step)
+ele.step.pred <- predict(ele.lm.step, valid)
+# check outliers/ leverage points
+par(mfrow=c(2,2))
+plot(ele.lm.step, pch = ".")
+
+# residual histgram
+pred.res<-valid$total.load.actual - ele.step.pred
+hist(pred.res, breaks = 100, xlab = "Residuals", main = "")
+```
+
+
+#### backward selection
+```{r}
+vif_r1<-as.data.frame(vif(ele.lm.step))
+vif_r1
+
+accuracy(ele.lm.step$fitted.values, train$total.load.actual)
+accuracy(ele.step.pred, valid$total.load.actual)
+
+```
+
+
+
+
+
+### add interaction/ ploynominal term
+```{r}
+# add terms
+ele.t <- ele.t %>% mutate(
+  # non-linear effect of temp
+  #"temp_2"=temp^2,
+  # additional effect of combining weather
+  "rain_wind"=rain_1h*wind_speed,
+  "clouds_rain"=clouds_all*rain_1h,
+  "wind_clouds"=wind_speed*clouds_all,
+  # additional effect of forecast of price and price
+  #"predprice_price"=price.day.ahead*price.actual
+  )
+
+ele.t <- ele.t[,-1]
+# partition data
+set.seed(2)
+index <- sample(1:nrow(ele.t), round(nrow(ele.t)*0.6,0))
+train <- ele.t[index,]
+valid <- ele.t[-index,]
+```
+
+```{r}
+# regression
+# fit the model
+ele.lm <- lm(total.load.actual~., data = train)
+print("----- model -----")
+options(acipen=999)
+summary(ele.lm)
+
+vif3<-as.data.frame(vif(ele.lm))
+vif3
+
+# delete variables with high vif
+ele.t<-ele.t[, -26]
+set.seed(2)
+index <- sample(1:nrow(ele.t), round(nrow(ele.t)*0.6,0))
+train <- ele.t[index,]
+valid <- ele.t[-index,]
+
+ele.lm <- lm(total.load.actual~., data = train)
+vif4<-as.data.frame(vif(ele.lm))
+vif4
+```
+
+```{r }
+# predict using model
+ele.pred <- predict(ele.lm, data = valid)
+options(scipen = 999, digits = 3)
+
+```
+
+
+```{r }
+# backward selection
+ele.lm.step <- step(ele.lm, direction = "backward")
+summary(ele.lm.step)  #0.918
+ele.step.pred <- predict(ele.lm.step, valid)
+
+# check outliers/ leverage points
+par(mfrow=c(2,2))
+plot(ele.lm.step, pch = ".")
+
+
+
+# exclude outliers & fit the model 
+# length(boxplot(ele.lm$residuals)$out) #216
+train <- train[-as.numeric(names(boxplot(ele.lm.step$residuals)$out)),]
+
+ele.lm <- lm(total.load.actual~., data = train)
+ele.lm.step <- step(ele.lm, direction = "backward")
+summary(ele.lm.step)   #0.924
+ele.step.pred <- predict(ele.lm.step, valid)
+# check outliers/ leverage points
+par(mfrow=c(2,2))
+plot(ele.lm.step, pch = ".")
+
+# residual histgram
+pred.res<-valid$total.load.actual - ele.step.pred
+hist(pred.res, breaks = 100, xlab = "Residuals", main = "")
+```
+
+#### backward selection
+```{r}
+vif_r2<-as.data.frame(vif(ele.lm.step))
+vif_r2
+
+accuracy(ele.lm.step$fitted.values, train$total.load.actual)
+accuracy(ele.step.pred, valid$total.load.actual)
+```
